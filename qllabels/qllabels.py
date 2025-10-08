@@ -159,13 +159,12 @@ IMAGESIZE_600 = {
 LABEL_DPI = 300
 MARGIN_INCH = 0.00
 VERTICAL_TEXT_GAP_MULTIPLIER = 2  # top + gap + bottom margins around rotated text strip
-VERTICAL_TEXT_STRIP_MAX_INCH = 0.05
+VERTICAL_TEXT_STRIP_MAX_INCH = 0.06
 VERTICAL_TEXT_HEIGHT_SCALE = 2.6
 BIB_HORIZONTAL_OFFSET_INCH = 0.125
-#BODY_BOTTOM_BAND_RATIO = 0.12
-BODY_BOTTOM_BAND_RATIO = 0.00
-BODY_TEXT_PADDING_RATIO = 0.025
-BODY_TEXT_HEIGHT_FACTOR = 0.46
+BODY_VERTICAL_STRIP_MULTIPLIER = 2.5
+BODY_VERTICAL_MARGIN_INCH = 0.02
+RESULTS_FOOTER_TEXT = 'results.wimsey.co'
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FONT_DIR = PROJECT_ROOT / 'fonts'
@@ -286,17 +285,17 @@ def _text_bbox(text: str, font: ImageFont.ImageFont) -> List[int]:
     return list(drawer.textbbox((0, 0), text, font=font))
 
 
-def _fit_vertical_font(text: str, strip_width: int, max_vertical_extent: int) -> ImageFont.ImageFont:
+def _fit_vertical_font(text: str, strip_width: int, max_vertical_extent: int, weight: str = 'regular') -> ImageFont.ImageFont:
     if not text:
-        return _load_font(10, 'regular')
-    font_path = _find_font_path('regular')
+        return _load_font(10, weight)
+    font_path = _find_font_path(weight)
     if not font_path:
         return ImageFont.load_default()
     low, high = 1, max(1, strip_width)
     best_font = None
     while low <= high:
         mid = (low + high) // 2
-        font = _load_font(mid, 'regular')
+        font = _load_font(mid, weight)
         bbox = _text_bbox(text, font)
         width = bbox[2] - bbox[0]
         height = bbox[3] - bbox[1]
@@ -305,7 +304,7 @@ def _fit_vertical_font(text: str, strip_width: int, max_vertical_extent: int) ->
             low = mid + 1
         else:
             high = mid - 1
-    return best_font or _load_font(max(1, high), 'regular')
+    return best_font or _load_font(max(1, high), weight)
 
 
 def _run_pdftotext_bbox(pdf_bytes: bytes) -> bytes:
@@ -662,56 +661,81 @@ def render_frame_label(fields: LabelFields, target_size: tuple[int, int], vertic
 def render_body_label(fields: LabelFields, target_size: tuple[int, int]) -> Image.Image:
     width, height = target_size
     margin_px = max(0, int(round(LABEL_DPI * MARGIN_INCH)))
-    bottom_band_height = max(1, int(round(height * BODY_BOTTOM_BAND_RATIO)))
-    digit_area_height = max(1, height - bottom_band_height)
+    offset_px = max(0, int(round(LABEL_DPI * BIB_HORIZONTAL_OFFSET_INCH)))
+    vertical_margin_px = max(4, int(round(LABEL_DPI * BODY_VERTICAL_MARGIN_INCH)))
     image = Image.new('L', (width, height), color=255)
 
-    digit_width = max(1, width - 2 * margin_px)
-    digit_height = max(1, digit_area_height - margin_px)
-    bib_block = _render_bib_block(fields.bib, digit_width, digit_height)
-    bib_x = margin_px + (digit_width - bib_block.width) // 2
-    bib_y = max(0, margin_px)
-    image.paste(bib_block, (max(0, bib_x), bib_y))
-
-    band = Image.new('L', (width, bottom_band_height), color=255)
-    drawer = ImageDraw.Draw(band)
-    padding_x = max(4, int(width * BODY_TEXT_PADDING_RATIO))
-    padding_y = max(4, int(bottom_band_height * BODY_TEXT_PADDING_RATIO))
-
-    event_area_width = width // 2
-    participant_area_width = width - event_area_width
-
-    max_text_height_limit = max(1, int((bottom_band_height - padding_y) * BODY_TEXT_HEIGHT_FACTOR))
-    event_font = _fit_horizontal_font(fields.event, event_area_width - 2 * padding_x, max_text_height_limit, 'regular')
-    participant_font = _fit_horizontal_font(fields.participant, participant_area_width - 2 * padding_x, max_text_height_limit, 'regular')
-
     participant_text = fields.participant.strip()
-    if participant_text.lower() == 'crossmgr' or not participant_text:
-        participant_text = 'results.wimsey.co'
+    if not participant_text or participant_text.lower() == 'crossmgr':
+        participant_text = fields.event.strip()
 
-    event_bbox = _text_bbox(fields.event, event_font) if fields.event else [0, 0, 0, 0]
-    participant_bbox = _text_bbox(participant_text, participant_font) if participant_text else [0, 0, 0, 0]
-    baseline_height = max(event_bbox[3] - event_bbox[1], participant_bbox[3] - participant_bbox[1], 1)
-    baseline_y = bottom_band_height - padding_y - baseline_height
-    baseline_y = max(0, baseline_y)
+    vertical_texts: List[str] = [RESULTS_FOOTER_TEXT]
+    if participant_text and participant_text.lower() != RESULTS_FOOTER_TEXT.lower():
+        vertical_texts.append(participant_text)
 
-    def draw_text(text: str, font: ImageFont.ImageFont, bbox: List[int], area_start: int, area_width: int, anchor: str = 'left') -> None:
-        if not text:
-            return
-        text_width = bbox[2] - bbox[0]
-        text_height = max(1, bbox[3] - bbox[1])
-        if anchor == 'left':
-            x = area_start + padding_x - bbox[0]
+    strip_width = max(1, int(round(LABEL_DPI * VERTICAL_TEXT_STRIP_MAX_INCH * BODY_VERTICAL_STRIP_MULTIPLIER)))
+    available_vertical = max(height - 2 * vertical_margin_px, height // 2)
+    per_text_vertical = max(1, available_vertical // max(1, len(vertical_texts)))
+
+    text_images: List[Image.Image] = []
+    for text_value in vertical_texts:
+        font = _fit_vertical_font(text_value, strip_width, per_text_vertical, weight='bold')
+        text_images.append(_create_rotated_text_image(text_value, font))
+
+    combined_height = sum(img.height for img in text_images)
+    max_combined_height = max(1, height - 2 * vertical_margin_px)
+    if combined_height > 0:
+        scale_factor = min(VERTICAL_TEXT_HEIGHT_SCALE, max_combined_height / combined_height)
+        if scale_factor > 1:
+            text_images = [
+                _scale_vertical_text(img, scale_factor, strip_width, max_combined_height)
+                for img in text_images
+            ]
+            combined_height = sum(img.height for img in text_images)
+        if combined_height > max_combined_height:
+            reduction = max_combined_height / max(1, combined_height)
+            text_images = [
+                _scale_vertical_text(img, reduction, strip_width, max_combined_height)
+                for img in text_images
+            ]
+            combined_height = sum(img.height for img in text_images)
+
+    vertical_band_width = max([strip_width] + [img.width for img in text_images]) if text_images else strip_width
+
+    positions: List[int] = []
+    if text_images:
+        if len(text_images) == 1:
+            img = text_images[0]
+            y = max(vertical_margin_px, (height - img.height) // 2)
+            y = min(y, height - vertical_margin_px - img.height)
+            positions.append(max(0, y))
         else:
-            x = area_start + area_width - padding_x - text_width - bbox[0]
-        y = baseline_y - bbox[1]
-        drawer.text((x, y), text, font=font, fill=0)
+            total_height = sum(img.height for img in text_images)
+            available = max(0, height - 2 * vertical_margin_px)
+            extra_space = max(0, available - total_height)
+            gap = extra_space / max(1, len(text_images) - 1)
+            y = float(vertical_margin_px)
+            for index, img in enumerate(text_images):
+                max_y = max(0, height - vertical_margin_px - img.height)
+                y_clamped = int(round(min(max(y, 0), max_y)))
+                positions.append(y_clamped)
+                y = y_clamped + img.height + gap
 
-    draw_text(fields.event, event_font, event_bbox, 0, event_area_width, anchor='left')
-    draw_text(participant_text, participant_font, participant_bbox, event_area_width, participant_area_width, anchor='right')
+    for img, y in zip(text_images, positions):
+        _paste_rotated_text(image, img, margin_px, y)
 
-    image.paste(band, (0, height - bottom_band_height))
+    left_margin_px = margin_px + vertical_band_width + offset_px
+    right_margin_px = margin_px
+    digit_area_width = max(1, width - left_margin_px - right_margin_px)
+    digit_area_height = max(1, height - 2 * margin_px)
+    bib_block = _render_bib_block(fields.bib, digit_area_width, digit_area_height)
+    bib_x = max(0, width - right_margin_px - bib_block.width)
+    bib_y = margin_px + max(0, (digit_area_height - bib_block.height) // 2)
+    bib_y = min(bib_y, height - margin_px - bib_block.height)
+    image.paste(bib_block, (bib_x, bib_y))
     return image
+
+
 
 def render_label(
     raw_fname: str,
