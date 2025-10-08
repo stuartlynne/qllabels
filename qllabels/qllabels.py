@@ -89,11 +89,14 @@ def log(s):
 def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str]]:
     save_png_prefix: Optional[str] = None
     save_raster_prefix: Optional[str] = None
+    dpi_600 = False
     positional: List[str] = []
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg in ('--save_raster', '--save-raster'):
+        if arg in ('--dpi_600', ):
+            dpi_600 = True
+        elif arg in ('--save_raster', '--save-raster'):
             if save_raster_prefix is not None:
                 usage('Duplicate --save_png specified')
             i += 1
@@ -113,11 +116,11 @@ def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str]]:
     if not positional:
         usage('No filename argument')
     print('save_png_prefix: %s save_raster_prefix: %s' % (save_png_prefix, save_raster_prefix), file=sys.stderr)
-    return positional[0], save_png_prefix, save_raster_prefix
+    return positional[0], save_png_prefix, save_raster_prefix, dpi_600
 
 
-raw_fname, save_png_prefix, save_raster_prefix = parse_cli_args(sys.argv[1:])
-print('raw_fname: %s save_png_prefix: %s save_raster_prefix: %s' % (raw_fname, save_png_prefix, save_raster_prefix), file=sys.stderr)
+raw_fname, save_png_prefix, save_raster_prefix, dpi_600 = parse_cli_args(sys.argv[1:])
+print('raw_fname: %s save_png_prefix: %s save_raster_prefix: %s dpi_600: %s' % (raw_fname, save_png_prefix, save_raster_prefix, dpi_600), file=sys.stderr)
 fname = os.path.basename(raw_fname)
 
 
@@ -136,6 +139,7 @@ Sizes = {
     "Shoulder": "small",
     "Emergency": "small",
     "Body": "large",
+    "bib": "large",
   }
 
 Pools = {
@@ -173,19 +177,33 @@ try:
 except:
     usage('Cannot find printerName %s' % (printerName))
 
-imagesize = {
+
+imagesize_300 = {
     '62': (1109, 696),
     '62x100': (1109, 696),
     '102': (1660, 1164),
     '102x152': (1660, 1164),
 }
 
-LABEL_DPI = 600
+imagesize_600 = {
+    '62': (2218, 1392),
+    '62x100': (2218, 1392),
+    '102': (3320, 2328),
+    '102x152': (3320, 2328),
+}
+
+LABEL_DPI = 600 if dpi_600 else 300
+imagesize = imagesize_600 if dpi_600 else imagesize_300
+
 MARGIN_INCH = 0.00
 VERTICAL_TEXT_GAP_MULTIPLIER = 2  # top + gap + bottom margins around rotated text strip
 VERTICAL_TEXT_STRIP_MAX_INCH = 0.05
 VERTICAL_TEXT_HEIGHT_SCALE = 2.6
 BIB_HORIZONTAL_OFFSET_INCH = 0.125
+#BODY_BOTTOM_BAND_RATIO = 0.12
+BODY_BOTTOM_BAND_RATIO = 0.00
+BODY_TEXT_PADDING_RATIO = 0.025
+BODY_TEXT_HEIGHT_FACTOR = 0.46
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FONT_DIR = PROJECT_ROOT / 'fonts'
@@ -393,7 +411,7 @@ def _parse_lines(pdf_bytes: bytes) -> List[Line]:
         y_tolerance = 1.5
         for word in words:
             if current_line and current_y is not None and abs(word.y_min - current_y) > y_tolerance:
-                lines.append(_words_to_line(current_line, page_index, width))
+                lines.extend(_words_to_lines(current_line, page_index, width))
                 current_line = []
                 current_y = None
             current_line.append(word)
@@ -402,27 +420,42 @@ def _parse_lines(pdf_bytes: bytes) -> List[Line]:
             else:
                 current_y = (current_y * (len(current_line) - 1) + word.y_min) / len(current_line)
         if current_line:
-            lines.append(_words_to_line(current_line, page_index, width))
+            lines.extend(_words_to_lines(current_line, page_index, width))
     if not lines:
         raise LabelExtractionError('No text lines found in PDF')
     return lines
 
 
-def _words_to_line(words: List[Word], page_index: int, page_width: float) -> Line:
+def _words_to_lines(words: List[Word], page_index: int, page_width: float) -> List[Line]:
+    if not words:
+        return []
     words_sorted = sorted(words, key=lambda w: w.x_min)
-    effective = [w for w in words_sorted if w.text.strip().lower() not in IGNORED_TEXTS]
-    if not effective:
-        effective = words_sorted
-    text = ' '.join(word.text for word in effective)
-    return Line(
-        text=text,
-        x_min=min(word.x_min for word in effective),
-        y_min=min(word.y_min for word in effective),
-        x_max=max(word.x_max for word in effective),
-        y_max=max(word.y_max for word in effective),
-        page=page_index,
-        page_width=page_width,
-    )
+    segments: List[List[Word]] = []
+    current_segment: List[Word] = [words_sorted[0]]
+    gap_threshold = 10.0
+    for prev, word in zip(words_sorted, words_sorted[1:]):
+        if word.x_min - prev.x_max > gap_threshold:
+            segments.append(current_segment)
+            current_segment = [word]
+        else:
+            current_segment.append(word)
+    segments.append(current_segment)
+
+    lines: List[Line] = []
+    for segment in segments:
+        text = ' '.join(word.text for word in segment)
+        lines.append(
+            Line(
+                text=text,
+                x_min=min(word.x_min for word in segment),
+                y_min=min(word.y_min for word in segment),
+                x_max=max(word.x_max for word in segment),
+                y_max=max(word.y_max for word in segment),
+                page=page_index,
+                page_width=page_width,
+            )
+        )
+    return lines
 
 
 def _has_alpha(text: str) -> bool:
@@ -445,6 +478,14 @@ def _select_event_line(lines: Iterable[Line]) -> Line:
         and line.normalized_text not in IGNORED_TEXTS
     ]
     if not candidates:
+        candidates = [
+            line
+            for line in lines
+            if _has_alpha(line.text)
+            and len(line.text.strip()) > 1
+        ]
+    if not candidates:
+        log('Event extraction fallback failed; available lines: %s' % [line.text for line in lines])
         raise LabelExtractionError('Event name not found in PDF content')
     left_candidates = [line for line in candidates if line.center_x <= line.page_width / 2]
     if left_candidates:
@@ -462,6 +503,15 @@ def _select_participant_line(lines: Iterable[Line], preferred_page: int, event_t
         and line.normalized_text not in IGNORED_TEXTS
     ]
     if not candidates:
+        candidates = [
+            line
+            for line in lines
+            if _has_alpha(line.text)
+            and len(line.text.strip()) > 1
+            and line.normalized_text != event_text.strip().lower()
+        ]
+    if not candidates:
+        log('Participant extraction fallback failed; available lines: %s' % [line.text for line in lines])
         raise LabelExtractionError('Participant name not found in PDF content')
     same_page = [line for line in candidates if line.page == preferred_page]
     if same_page:
@@ -520,6 +570,25 @@ def _scale_vertical_text(img: Image.Image, factor: float, max_width: int, max_he
     return ImageOps.contain(img, (target_width, target_height), RESAMPLING_LANCZOS)
 
 
+def _fit_horizontal_font(text: str, max_width: int, max_height: int, weight: str = 'regular') -> ImageFont.ImageFont:
+    if not text:
+        return _load_font(max(10, max_height // 2), weight)
+    low, high = 1, max(1, max_height * 3)
+    best = _load_font(1, weight)
+    while low <= high:
+        mid = (low + high) // 2
+        font = _load_font(mid, weight)
+        bbox = _text_bbox(text, font)
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        if width <= max_width and height <= max_height:
+            best = font
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
 def _render_bib_block(text: str, target_width: int, target_height: int) -> Image.Image:
     if not text:
         return Image.new('L', (target_width, target_height), color=255)
@@ -537,10 +606,15 @@ def _render_bib_block(text: str, target_width: int, target_height: int) -> Image
     if contained.height < target_height:
         contained = contained.resize((max(1, contained.width), target_height), RESAMPLING_LANCZOS)
     inverted = ImageOps.invert(contained)
+    content_bbox = inverted.getbbox()
+    if content_bbox:
+        cropped = inverted.crop(content_bbox)
+    else:
+        cropped = inverted
     result = Image.new('L', (target_width, target_height), color=255)
-    offset_x = (target_width - inverted.width) // 2
-    offset_y = (target_height - inverted.height) // 2
-    result.paste(inverted, (offset_x, offset_y))
+    offset_x = (target_width - cropped.width) // 2
+    offset_y = (target_height - cropped.height) // 2
+    result.paste(cropped, (offset_x, offset_y))
     return result
 
 
@@ -622,6 +696,61 @@ def render_frame_label(fields: LabelFields, target_size: tuple[int, int], vertic
 
     return image
 
+
+def render_body_label(fields: LabelFields, target_size: tuple[int, int]) -> Image.Image:
+    width, height = target_size
+    margin_px = max(0, int(round(LABEL_DPI * MARGIN_INCH)))
+    bottom_band_height = max(1, int(round(height * BODY_BOTTOM_BAND_RATIO)))
+    digit_area_height = max(1, height - bottom_band_height)
+    image = Image.new('L', (width, height), color=255)
+
+    digit_width = max(1, width - 2 * margin_px)
+    digit_height = max(1, digit_area_height - margin_px)
+    bib_block = _render_bib_block(fields.bib, digit_width, digit_height)
+    bib_x = margin_px + (digit_width - bib_block.width) // 2
+    bib_y = max(0, margin_px)
+    image.paste(bib_block, (max(0, bib_x), bib_y))
+
+    band = Image.new('L', (width, bottom_band_height), color=255)
+    drawer = ImageDraw.Draw(band)
+    padding_x = max(4, int(width * BODY_TEXT_PADDING_RATIO))
+    padding_y = max(4, int(bottom_band_height * BODY_TEXT_PADDING_RATIO))
+
+    event_area_width = width // 2
+    participant_area_width = width - event_area_width
+
+    max_text_height_limit = max(1, int((bottom_band_height - padding_y) * BODY_TEXT_HEIGHT_FACTOR))
+    event_font = _fit_horizontal_font(fields.event, event_area_width - 2 * padding_x, max_text_height_limit, 'regular')
+    participant_font = _fit_horizontal_font(fields.participant, participant_area_width - 2 * padding_x, max_text_height_limit, 'regular')
+
+    participant_text = fields.participant.strip()
+    if participant_text.lower() == 'crossmgr' or not participant_text:
+        participant_text = 'results.wimsey.co'
+
+    event_bbox = _text_bbox(fields.event, event_font) if fields.event else [0, 0, 0, 0]
+    participant_bbox = _text_bbox(participant_text, participant_font) if participant_text else [0, 0, 0, 0]
+    baseline_height = max(event_bbox[3] - event_bbox[1], participant_bbox[3] - participant_bbox[1], 1)
+    baseline_y = bottom_band_height - padding_y - baseline_height
+    baseline_y = max(0, baseline_y)
+
+    def draw_text(text: str, font: ImageFont.ImageFont, bbox: List[int], area_start: int, area_width: int, anchor: str = 'left') -> None:
+        if not text:
+            return
+        text_width = bbox[2] - bbox[0]
+        text_height = max(1, bbox[3] - bbox[1])
+        if anchor == 'left':
+            x = area_start + padding_x - bbox[0]
+        else:
+            x = area_start + area_width - padding_x - text_width - bbox[0]
+        y = baseline_y - bbox[1]
+        drawer.text((x, y), text, font=font, fill=0)
+
+    draw_text(fields.event, event_font, event_bbox, 0, event_area_width, anchor='left')
+    draw_text(participant_text, participant_font, participant_bbox, event_area_width, participant_area_width, anchor='right')
+
+    image.paste(band, (0, height - bottom_band_height))
+    return image
+
 try:
     hostname = '172.17.0.1' if is_docker() else '127.0.0.1'
     port = printer['port']
@@ -631,28 +760,44 @@ except:
     usage('Cannot find one of hostname, port, model, labelsize: %s' % (printer))
     usage()
 
-print('hostname: %s port: %s model: %s labelsize: %s' % (hostname, port, model, labelsize), file=sys.stderr)
+
+supports_600 = {'62', '62x100'}
+effective_dpi_600 = dpi_600 and labelsize in supports_600
+if dpi_600 and not effective_dpi_600:
+    log(f"dpi_600 requested but not supported for label {labelsize}; falling back to 300 dpi")
+
+LABEL_DPI = 600 if effective_dpi_600 else 300
+imagesize = imagesize_600 if LABEL_DPI == 600 else imagesize_300
+
 
 payload = sys.stdin.buffer.read()
 label_dimensions = imagesize[labelsize]
+print('hostname: %s port: %s model: %s labelsize: %s label_dimensions: %s LABEL_DPI: %s' % (hostname, port, model, labelsize, label_dimensions, LABEL_DPI), file=sys.stderr)
 images: List[Image.Image]
-if params.get('type') == 'Frame' and labelsize in ('62', '62x100'):
-    try:
-        fields = extract_label_fields(payload)
+label_type = params.get('type')
+try:
+    fields = extract_label_fields(payload)
+except LabelExtractionError as exc:
+    log(f'Field extraction failed ({exc}); reverting to rasterized PDF')
+    images = convert_from_bytes(payload, size=label_dimensions, dpi=LABEL_DPI, grayscale=True)
+else:
+    if label_type == 'Frame' and labelsize in ('62', '62x100'):
         left_image = render_frame_label(fields, label_dimensions, vertical_side='left')
         right_image = render_frame_label(fields, label_dimensions, vertical_side='right')
         images = [left_image, right_image]
         log(f"Rendered custom Frame label set for bib {fields.bib}")
-    except LabelExtractionError as exc:
-        log(f'Custom Frame layout fallback: {exc}')
+    elif label_type == 'Body' and labelsize in ('102', '102x152'):
+        body_image = render_body_label(fields, label_dimensions)
+        images = [body_image]
+        log(f"Rendered custom Body label for bib {fields.bib}")
+    else:
+        log(f"Custom layout not defined for type {label_type}; rasterizing PDF")
         images = convert_from_bytes(payload, size=label_dimensions, dpi=LABEL_DPI, grayscale=True)
-else:
-    images = convert_from_bytes(payload, size=label_dimensions, dpi=LABEL_DPI, grayscale=True)
 
 if not images:
     usage('No images produced from input PDF')
 
-if params.get('type') == 'Frame':
+if label_type == 'Frame':
     preview_images = images
 else:
     preview_images = images
@@ -671,7 +816,6 @@ if save_png_prefix:
 # the last file will have a cut so that multiple labels will be kept together.
 #
 
-labelsize = "62"
 print('brother_ql: hostname: %s port: %s model: %s labelsize: %s' % (hostname, port, model, labelsize), file=sys.stderr)
 args_base = [ 
     'brother_ql', '--printer', f"tcp://{hostname}:{port}",
@@ -683,8 +827,10 @@ args_base = [
 #
 backend = 'network'
 printer = f"tcp://{hostname}:{port}"
-kwargs = { 'rotate': '90', 'cut': False, 'label': labelsize, }
-#print('brother_ql: backend: %s printer: %s model: %s kwargs: %s' % (backend, printer, model, kwargs), file=sys.stderr)
+base_kwargs = { 'rotate': '90', 'label': labelsize }
+if LABEL_DPI == 600:
+    base_kwargs['dpi_600'] = True
+print('brother_ql: backend: %s printer: %s model: %s kwargs: %s' % (backend, printer, model, base_kwargs), file=sys.stderr)
 #print('*********************', file=sys.stderr)
 
 # N.b. In theory we can convert and print all labels with one convert/send, but 
@@ -701,16 +847,14 @@ kwargs = { 'rotate': '90', 'cut': False, 'label': labelsize, }
 data = None
 databytes = 0
 for index, image in enumerate(images):
-    if index == len(images) - 1:
-        #print('brother_ql[%d] Last' % (index), file=sys.stderr)
-        kwargs['cut'] = True
-        kwargs['dpi_600'] = True
-    #else:
-    #    print('brother_ql[%d] ' % (index), file=sys.stderr)
+    job_kwargs = base_kwargs.copy()
+    job_kwargs['cut'] = index == len(images) - 1
+    print('brother_ql[%d] image: %s size: %s mode: %s' % (index, type(image), image.size, image.mode), file=sys.stderr)
     qlr = BrotherQLRaster(model)
 
     # convert the image to raster format instructions, we get bytes back
-    instructions = convert(qlr, [image], **kwargs)
+    print('brother_ql[%d] kwargs: %s' % (index, job_kwargs), file=sys.stderr)
+    instructions = convert(qlr, [image], **job_kwargs)
 
     # append the instructions to the data buffer bytearray, this is slightly painful
     databytes += len(instructions)
