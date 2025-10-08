@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Build artifacts
+build/
+dist/
+qllabels.egg-info/
+
+# Generated previews and rasters
+*.png
+*.raster
+
+# Temporary directories
+fonts/
+tmp/
+
+# Backup saves from editor scripts
+qllabels/qllabels.py-save*
