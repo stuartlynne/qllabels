@@ -47,7 +47,7 @@
 # the TCP port that the server responds to, e.g. 8000 or 8001 etc.
 #
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import sys
 import os
