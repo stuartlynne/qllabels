@@ -119,20 +119,6 @@ def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str]]:
     return positional[0], save_png_prefix, save_raster_prefix, dpi_600
 
 
-raw_fname, save_png_prefix, save_raster_prefix, dpi_600 = parse_cli_args(sys.argv[1:])
-print('raw_fname: %s save_png_prefix: %s save_raster_prefix: %s dpi_600: %s' % (raw_fname, save_png_prefix, save_raster_prefix, dpi_600), file=sys.stderr)
-fname = os.path.basename(raw_fname)
-
-
-# Split file name apart to get information about the label.
-#   bib, port, antenna and type parameters
-# e.g:
-#   230489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf
-#
-# Numeric fields are converted to numbers to allow comparisons like params['antenna'] == 1
-params = { k:(int(v) if v.isdigit() else v) for k, v in (p.split('-') for p in os.path.splitext(fname)[0].split('_')[1:] if '-' in p ) }
-print('params: %s' % (params))
-
 Sizes = {
     "Tag": "small",
     "Frame": "small",
@@ -156,45 +142,21 @@ Printers = {
     "large2":  { "port":9104, "model":"QL-1060N", "labelsize": "102x152"},
 } 
       
-try:
-    size = Sizes[params['type']]
-except:
-    usage('Do not understand type-%s' % (params['type']))
-
-poolMatch = "%s-%d" % (params['port'], params['antenna'])
-try:
-    pool = Pools[poolMatch]
-except:
-    usage('Do not understand %s' % (poolMatch))
-
-try:
-    printerName = pool[size]
-except:
-    usage('Do not understand printerName %s' % (printerName))
-
-try:
-    printer = Printers[printerName]
-except:
-    usage('Cannot find printerName %s' % (printerName))
-
-
-imagesize_300 = {
+IMAGESIZE_300 = {
     '62': (1109, 696),
     '62x100': (1109, 696),
     '102': (1660, 1164),
     '102x152': (1660, 1164),
 }
 
-imagesize_600 = {
+IMAGESIZE_600 = {
     '62': (2218, 1392),
     '62x100': (2218, 1392),
     '102': (3320, 2328),
     '102x152': (3320, 2328),
 }
 
-LABEL_DPI = 600 if dpi_600 else 300
-imagesize = imagesize_600 if dpi_600 else imagesize_300
-
+LABEL_DPI = 300
 MARGIN_INCH = 0.00
 VERTICAL_TEXT_GAP_MULTIPLIER = 2  # top + gap + bottom margins around rotated text strip
 VERTICAL_TEXT_STRIP_MAX_INCH = 0.05
@@ -751,149 +713,156 @@ def render_body_label(fields: LabelFields, target_size: tuple[int, int]) -> Imag
     image.paste(band, (0, height - bottom_band_height))
     return image
 
-try:
-    hostname = '172.17.0.1' if is_docker() else '127.0.0.1'
-    port = printer['port']
-    model = printer['model']
-    labelsize = printer['labelsize']
-except:
-    usage('Cannot find one of hostname, port, model, labelsize: %s' % (printer))
-    usage()
+def render_label(
+    raw_fname: str,
+    payload: bytes,
+    save_png_prefix: Optional[str] = None,
+    save_raster_prefix: Optional[str] = None,
+    dpi_600: bool = False,
+) -> tuple[Optional[bytes], str, int]:
+    fname = os.path.basename(raw_fname)
 
+    params = {
+        key: (int(value) if value.isdigit() else value)
+        for key, value in (
+            part.split('-')
+            for part in os.path.splitext(fname)[0].split('_')[1:]
+            if '-' in part
+        )
+    }
+    print('params: %s' % (params))
 
-supports_600 = {'62', '62x100'}
-effective_dpi_600 = dpi_600 and labelsize in supports_600
-if dpi_600 and not effective_dpi_600:
-    log(f"dpi_600 requested but not supported for label {labelsize}; falling back to 300 dpi")
+    try:
+        size = Sizes[params['type']]
+    except KeyError:
+        usage('Do not understand type-%s' % (params.get('type')))
 
-LABEL_DPI = 600 if effective_dpi_600 else 300
-imagesize = imagesize_600 if LABEL_DPI == 600 else imagesize_300
+    pool_key = f"{params['port']}-{params['antenna']}"
+    try:
+        pool = Pools[pool_key]
+    except KeyError:
+        usage('Do not understand %s' % (pool_key))
 
+    try:
+        printer_name = pool[size]
+    except KeyError:
+        usage('Do not understand printerName %s' % (size))
 
-payload = sys.stdin.buffer.read()
-label_dimensions = imagesize[labelsize]
-print('hostname: %s port: %s model: %s labelsize: %s label_dimensions: %s LABEL_DPI: %s' % (hostname, port, model, labelsize, label_dimensions, LABEL_DPI), file=sys.stderr)
-images: List[Image.Image]
-label_type = params.get('type')
-try:
-    fields = extract_label_fields(payload)
-except LabelExtractionError as exc:
-    log(f'Field extraction failed ({exc}); reverting to rasterized PDF')
-    images = convert_from_bytes(payload, size=label_dimensions, dpi=LABEL_DPI, grayscale=True)
-else:
-    if label_type == 'Frame' and labelsize in ('62', '62x100'):
-        left_image = render_frame_label(fields, label_dimensions, vertical_side='left')
-        right_image = render_frame_label(fields, label_dimensions, vertical_side='right')
-        images = [left_image, right_image]
-        log(f"Rendered custom Frame label set for bib {fields.bib}")
-    elif label_type == 'Body' and labelsize in ('102', '102x152'):
-        body_image = render_body_label(fields, label_dimensions)
-        images = [body_image]
-        log(f"Rendered custom Body label for bib {fields.bib}")
-    else:
-        log(f"Custom layout not defined for type {label_type}; rasterizing PDF")
-        images = convert_from_bytes(payload, size=label_dimensions, dpi=LABEL_DPI, grayscale=True)
+    try:
+        printer = Printers[printer_name]
+    except KeyError:
+        usage('Cannot find printerName %s' % (printer_name))
 
-if not images:
-    usage('No images produced from input PDF')
-
-if label_type == 'Frame':
-    preview_images = images
-else:
-    preview_images = images
-
-if save_png_prefix:
-    directory = os.path.dirname(save_png_prefix)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    for index, image in enumerate(preview_images, start=1):
-        png_path = f"{save_png_prefix}-{index}.png"
-        image.save(png_path)
-        log(f'Saved preview image: {png_path}')
-    sys.exit(0)
-
-# convert PNG images to Brother Raster file, Note we use --no-cut for 0..N-1, 
-# the last file will have a cut so that multiple labels will be kept together.
-#
-
-print('brother_ql: hostname: %s port: %s model: %s labelsize: %s' % (hostname, port, model, labelsize), file=sys.stderr)
-args_base = [ 
-    'brother_ql', '--printer', f"tcp://{hostname}:{port}",
-    '--model', model, 'print', '--rotate', '90', '--label', labelsize, 
-    ]
-
-# use brother_ql to convert the pillow images to raster format instructions for the printer
-# and send them via the network to the printer (or qlmuxd).
-#
-backend = 'network'
-printer = f"tcp://{hostname}:{port}"
-base_kwargs = { 'rotate': '90', 'label': labelsize }
-if LABEL_DPI == 600:
-    base_kwargs['dpi_600'] = True
-print('brother_ql: backend: %s printer: %s model: %s kwargs: %s' % (backend, printer, model, base_kwargs), file=sys.stderr)
-#print('*********************', file=sys.stderr)
-
-# N.b. In theory we can convert and print all labels with one convert/send, but 
-# I cannot figure out how to get two labels printed with a single cut at the end.
-#
-#    qlr = BrotherQLRaster(model)
-#    instructions = convert(qlr, images, **kwargs)
-#    send(instructions=instructions, printer_identifier=printer, backend_identifier=backend, blocking=True)
-#
-# N.b. the brother_ql send works, but we need to send two labels with a single cut at the end as a single job,
-# this produces two jobs, which qlmuxd may send to two printers. Which is not what we want. 
-# We need to take all of the instructions, save them in a bytearray and send them as a single job.
-
-data = None
-databytes = 0
-for index, image in enumerate(images):
-    job_kwargs = base_kwargs.copy()
-    job_kwargs['cut'] = index == len(images) - 1
-    print('brother_ql[%d] image: %s size: %s mode: %s' % (index, type(image), image.size, image.mode), file=sys.stderr)
-    qlr = BrotherQLRaster(model)
-
-    # convert the image to raster format instructions, we get bytes back
-    print('brother_ql[%d] kwargs: %s' % (index, job_kwargs), file=sys.stderr)
-    instructions = convert(qlr, [image], **job_kwargs)
-
-    # append the instructions to the data buffer bytearray, this is slightly painful
-    databytes += len(instructions)
-    if data is None:
-        data = bytearray(instructions)
-    else:
-        data += bytearray(instructions)
-
-    #print('brother_ql[%d] instructions: %s %d data: %s %s databytes: %s ' % (index, type(instructions), len(instructions), type(data), len(data), databytes), file=sys.stderr)
-    #send(instructions=instructions, printer_identifier=printer, backend_identifier=backend, blocking=True)
-
-if save_raster_prefix:
-    directory = os.path.dirname(save_raster_prefix)
-    raster_path = f"{save_raster_prefix}.raster"
-    with open(raster_path, 'wb') as f:
-        f.write(data)
-    log(f'Saved preview image: {raster_path}')
-    sys.exit(0)
-print('brother_ql total databytes: %s ' % (databytes), file=sys.stderr)
-
-
-#exit(0)
-
-# This
-#print('brother_ql[%d] data: %s %s databytes: %s ' % (index, type(data), len(data), databytes), file=sys.stderr)
-
-# Send *.rast to qlmuxd or direct to printer
-#
-def main():
-    s = socket.socket()
     hostname = '172.17.0.1' if is_docker() else '127.0.0.1'
     try:
-        # XXX
-        port = 9100
-        hostname = '192.168.40.42'
+        port = printer['port']
+        model = printer['model']
+        labelsize = printer['labelsize']
+    except KeyError:
+        usage('Cannot find one of hostname, port, model, labelsize: %s' % (printer))
+
+    supports_600 = {'62', '62x100'}
+    effective_dpi_600 = dpi_600 and labelsize in supports_600
+    if dpi_600 and not effective_dpi_600:
+        log(f"dpi_600 requested but not supported for label {labelsize}; falling back to 300 dpi")
+
+    global LABEL_DPI
+    LABEL_DPI = 600 if effective_dpi_600 else 300
+    imagesize_map = IMAGESIZE_600 if LABEL_DPI == 600 else IMAGESIZE_300
+
+    label_dimensions = imagesize_map[labelsize]
+    print('hostname: %s port: %s model: %s labelsize: %s label_dimensions: %s LABEL_DPI: %s' % (hostname, port, model, labelsize, label_dimensions, LABEL_DPI), file=sys.stderr)
+
+    label_type = params.get('type')
+    try:
+        fields = extract_label_fields(payload)
+    except LabelExtractionError as exc:
+        log(f'Field extraction failed ({exc}); reverting to rasterized PDF')
+        images = convert_from_bytes(payload, size=label_dimensions, dpi=LABEL_DPI, grayscale=True)
+    else:
+        if label_type == 'Frame' and labelsize in ('62', '62x100'):
+            left_image = render_frame_label(fields, label_dimensions, vertical_side='left')
+            right_image = render_frame_label(fields, label_dimensions, vertical_side='right')
+            images = [left_image, right_image]
+            log(f"Rendered custom Frame label set for bib {fields.bib}")
+        elif label_type == 'Body' and labelsize in ('102', '102x152'):
+            body_image = render_body_label(fields, label_dimensions)
+            images = [body_image]
+            log(f"Rendered custom Body label for bib {fields.bib}")
+        else:
+            log(f"Custom layout not defined for type {label_type}; rasterizing PDF")
+            images = convert_from_bytes(payload, size=label_dimensions, dpi=LABEL_DPI, grayscale=True)
+
+    if not images:
+        usage('No images produced from input PDF')
+
+    if save_png_prefix:
+        directory = os.path.dirname(save_png_prefix)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        for index, image in enumerate(images, start=1):
+            png_path = f"{save_png_prefix}-{index}.png"
+            image.save(png_path)
+            log(f'Saved preview image: {png_path}')
+        return None, hostname, port
+
+    print('brother_ql: hostname: %s port: %s model: %s labelsize: %s' % (hostname, port, model, labelsize), file=sys.stderr)
+    backend = 'network'
+    printer_identifier = f"tcp://{hostname}:{port}"
+    base_kwargs = {'rotate': '90', 'label': labelsize}
+    if LABEL_DPI == 600:
+        base_kwargs['dpi_600'] = True
+    print('brother_ql: backend: %s printer: %s model: %s kwargs: %s' % (backend, printer_identifier, model, base_kwargs), file=sys.stderr)
+
+    data = bytearray()
+    databytes = 0
+    for index, image in enumerate(images):
+        job_kwargs = base_kwargs.copy()
+        job_kwargs['cut'] = index == len(images) - 1
+        print('brother_ql[%d] image: %s size: %s mode: %s' % (index, type(image), image.size, image.mode), file=sys.stderr)
+        qlr = BrotherQLRaster(model)
+        print('brother_ql[%d] kwargs: %s' % (index, job_kwargs), file=sys.stderr)
+        instructions = convert(qlr, [image], **job_kwargs)
+        databytes += len(instructions)
+        data.extend(instructions)
+
+    if save_raster_prefix:
+        directory = os.path.dirname(save_raster_prefix)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        raster_path = f"{save_raster_prefix}.raster"
+        with open(raster_path, 'wb') as f:
+            f.write(data)
+        log(f'Saved preview image: {raster_path}')
+        return None, hostname, port
+
+    print('brother_ql total databytes: %s ' % (databytes), file=sys.stderr)
+    return bytes(data), hostname, port
+
+
+def main() -> None:
+    raw_fname, save_png_prefix, save_raster_prefix, dpi_600 = parse_cli_args(sys.argv[1:])
+    print('raw_fname: %s save_png_prefix: %s save_raster_prefix: %s dpi_600: %s' % (raw_fname, save_png_prefix, save_raster_prefix, dpi_600), file=sys.stderr)
+    payload = sys.stdin.buffer.read()
+    data, hostname, port = render_label(raw_fname, payload, save_png_prefix, save_raster_prefix, dpi_600)
+    print('data: %s hostname: %s port: %s' % ('<omitted>' if data else None, hostname, port), file=sys.stderr)
+    if data is None:
+        return
+
+    s = socket.socket()
+    try:
         s.connect((hostname, port))
         s.sendall(data)
-        s.close()
     except Exception as e:
-        log('s.connect(%s,%d) %s' % ( hostname, port, e))
+        log('s.connect(%s,%d) %s' % (hostname, port, e))
         log(traceback.format_exc())
         exit(1)
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+if __name__ == '__main__':
+    main()
