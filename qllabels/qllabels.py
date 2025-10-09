@@ -64,7 +64,7 @@ from pdf2image import convert_from_bytes
 
 import datetime
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 
 # brother_ql2 is a forked version of brother_ql that is maintained
 # It supports the Image.LANCZOS resampling filter required in newer versions of Pillow.
@@ -512,6 +512,16 @@ def _create_rotated_text_image_right(text: str, font: ImageFont.ImageFont) -> Im
     return base.rotate(180, expand=True)
 
 
+def _binarize_text_image(img: Image.Image, threshold: int = 200) -> Image.Image:
+    if img.mode != 'L':
+        img = img.convert('L')
+    binary = img.point(lambda px: 0 if px < threshold else 255, mode='1')
+    result = binary.convert('L')
+    if result.width > 1 and result.height > 1:
+        result = result.filter(ImageFilter.MinFilter(3))
+    return result
+
+
 def _paste_rotated_text(base: Image.Image, img: Image.Image, x_offset: int, y_offset: int) -> None:
     if img.width == 0 or img.height == 0:
         return
@@ -593,11 +603,11 @@ def render_frame_label(fields: LabelFields, target_size: tuple[int, int], vertic
     participant_font = _fit_vertical_font(fields.participant, strip_width, per_text_vertical)
 
     if vertical_side.lower() == 'right':
-        event_img = _create_rotated_text_image_right(fields.event, event_font)
-        participant_img = _create_rotated_text_image_right(fields.participant, participant_font)
+        event_img = _binarize_text_image(_create_rotated_text_image_right(fields.event, event_font))
+        participant_img = _binarize_text_image(_create_rotated_text_image_right(fields.participant, participant_font))
     else:
-        event_img = _create_rotated_text_image(fields.event, event_font)
-        participant_img = _create_rotated_text_image(fields.participant, participant_font)
+        event_img = _binarize_text_image(_create_rotated_text_image(fields.event, event_font))
+        participant_img = _binarize_text_image(_create_rotated_text_image(fields.participant, participant_font))
 
     combined_height = event_img.height + participant_img.height
     max_combined_height = max(1, height - 2 * margin_px)
@@ -679,8 +689,8 @@ def render_body_label(fields: LabelFields, target_size: tuple[int, int]) -> Imag
 
     text_images: List[Image.Image] = []
     for text_value in vertical_texts:
-        font = _fit_vertical_font(text_value, strip_width, per_text_vertical, weight='bold')
-        text_images.append(_create_rotated_text_image(text_value, font))
+        font = _fit_vertical_font(text_value, strip_width, per_text_vertical)
+        text_images.append(_binarize_text_image(_create_rotated_text_image(text_value, font)))
 
     combined_height = sum(img.height for img in text_images)
     max_combined_height = max(1, height - 2 * vertical_margin_px)
@@ -698,31 +708,27 @@ def render_body_label(fields: LabelFields, target_size: tuple[int, int]) -> Imag
                 _scale_vertical_text(img, reduction, strip_width, max_combined_height)
                 for img in text_images
             ]
-            combined_height = sum(img.height for img in text_images)
 
     vertical_band_width = max([strip_width] + [img.width for img in text_images]) if text_images else strip_width
 
-    positions: List[int] = []
     if text_images:
-        if len(text_images) == 1:
-            img = text_images[0]
-            y = max(vertical_margin_px, (height - img.height) // 2)
-            y = min(y, height - vertical_margin_px - img.height)
-            positions.append(max(0, y))
-        else:
-            total_height = sum(img.height for img in text_images)
-            available = max(0, height - 2 * vertical_margin_px)
-            extra_space = max(0, available - total_height)
-            gap = extra_space / max(1, len(text_images) - 1)
-            y = float(vertical_margin_px)
-            for index, img in enumerate(text_images):
-                max_y = max(0, height - vertical_margin_px - img.height)
-                y_clamped = int(round(min(max(y, 0), max_y)))
-                positions.append(y_clamped)
-                y = y_clamped + img.height + gap
+        first_img = text_images[0]
+        y_pos = max(vertical_margin_px, (height - first_img.height) // 2) if len(text_images) == 1 else vertical_margin_px
+        y_pos = min(y_pos, height - vertical_margin_px - first_img.height)
+        _paste_rotated_text(image, first_img, margin_px, y_pos)
 
-    for img, y in zip(text_images, positions):
-        _paste_rotated_text(image, img, margin_px, y)
+        if len(text_images) > 1:
+            remaining = text_images[1:]
+            previous_bottom = y_pos + first_img.height
+            for img in remaining:
+                min_y = previous_bottom + vertical_margin_px
+                max_y = height - vertical_margin_px - img.height
+                if max_y >= min_y:
+                    paste_y = max_y
+                else:
+                    paste_y = max(vertical_margin_px, min_y)
+                _paste_rotated_text(image, img, margin_px, paste_y)
+                previous_bottom = paste_y + img.height
 
     left_margin_px = margin_px + vertical_band_width + offset_px
     right_margin_px = margin_px
