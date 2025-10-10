@@ -62,6 +62,7 @@ from typing import Iterable, List, Optional
 
 from pdf2image import convert_from_bytes
 
+import argparse
 import datetime
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
@@ -86,37 +87,47 @@ def usage(s):
 def log(s):
         print('%s %s' % (getTimeNow().strftime('%H:%M:%S'), s.rstrip()), file=sys.stderr)
 
-def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str]]:
-    save_png_prefix: Optional[str] = None
-    save_raster_prefix: Optional[str] = None
-    dpi_600 = False
-    positional: List[str] = []
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg in ('--dpi_600', ):
-            dpi_600 = True
-        elif arg in ('--save_raster', '--save-raster'):
-            if save_raster_prefix is not None:
-                usage('Duplicate --save_png specified')
-            i += 1
-            if i >= len(argv):
-                usage('Missing value for --save_raster')
-            save_raster_prefix = argv[i]
-        elif arg in ('--save_png', '--save-png'):
-            if save_png_prefix is not None:
-                usage('Duplicate --save_png specified')
-            i += 1
-            if i >= len(argv):
-                usage('Missing value for --save_png')
-            save_png_prefix = argv[i]
-        else:
-            positional.append(arg)
-        i += 1
-    if not positional:
-        usage('No filename argument')
-    print('save_png_prefix: %s save_raster_prefix: %s' % (save_png_prefix, save_raster_prefix), file=sys.stderr)
-    return positional[0], save_png_prefix, save_raster_prefix, dpi_600
+def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str], Optional[str], bool, Optional[str]]:
+    parser = argparse.ArgumentParser(
+        prog='QLLABELS.py',
+        description='Convert RaceDB label PDFs into Brother raster instructions.'
+    )
+    parser.add_argument(
+        '--save-png',
+        '--save_png',
+        dest='save_png_prefix',
+        help='prefix path for saving rendered PNG previews',
+    )
+    parser.add_argument(
+        '--save-raster',
+        '--save_raster',
+        dest='save_raster_prefix',
+        help='prefix path for saving raster preview output',
+    )
+    parser.add_argument(
+        '--dpi-600',
+        '--dpi_600',
+        dest='dpi_600',
+        action='store_true',
+        help='render at 600 dpi when the target label supports it',
+    )
+    parser.add_argument(
+        '--labelsize',
+        dest='labelsize',
+        help='override detected label size (e.g. 62x100, 102x152)',
+    )
+    parser.add_argument(
+        'pdf_path',
+        help='label PDF produced by RaceDB (e.g. *_type-Frame.pdf)'
+    )
+
+    args = parser.parse_args(argv)
+    print(
+        'save_png_prefix: %s save_raster_prefix: %s labelsize: %s'
+        % (args.save_png_prefix, args.save_raster_prefix, args.labelsize),
+        file=sys.stderr,
+    )
+    return args.pdf_path, args.save_png_prefix, args.save_raster_prefix, args.dpi_600, args.labelsize
 
 
 Sizes = {
@@ -127,6 +138,28 @@ Sizes = {
     "Body": "large",
     "bib": "large",
   }
+
+# XXX
+# Need to refactor this.
+# We get an indication of what size of label to print from the type:
+#   "type" is one of Frame, Body, Shoulder or Emergency.
+# We get an indication of what pool of printers to use from the antenna port:
+#   [012] - first set (left) printers
+#   [34] - second set (right) printers
+
+# The size of the label is one of "small" or "large":
+#   small = 62, 62x100
+#   large = 102, 103, 104, 102x152, 103x164    
+#
+# N.b. 103 and 103x164 actually have media width of 104mm
+# 
+    #Label("62",     ( 62,   0), FormFactor.ENDLESS,       ( 732,    0), ( 696,    0),  12 , feed_margin=35),
+    #Label("62x100", ( 62, 100), FormFactor.DIE_CUT,       ( 732, 1179), ( 696, 1109),  12 ),
+    #Label("103",    (104,   0), FormFactor.ENDLESS,       (1224,    0), (1200,    0),  12 , feed_margin=35, restricted_to_models=['QL-1100', 'QL-1110NWB']),
+    #Label("104",    (104,   0), FormFactor.ENDLESS,       (1227,    0), (1200,    0),  -8 , feed_margin=35, restricted_to_models=['QL-1050', 'QL-1060N', 'QL-1100', 'QL-1110NWB', 
+    #Label("102x152",(102, 153), FormFactor.DIE_CUT,       (1200, 1804), (1164, 1660),  12 , restricted_to_models=['QL-1050', 'QL-1060N', 'QL-1100', 'QL-1110NWB', 'QL-1115NWB']),
+    #Label("103x164",(104, 164), FormFactor.DIE_CUT,       (1224, 1941), (1200, 1822),  12 , restricted_to_models=['QL-1100', 'QL-1110NWB']),
+
 
 Pools = {
     "8000-0": { "small": "small1", "large": "large1"},
@@ -147,6 +180,9 @@ IMAGESIZE_300 = {
     '62x100': (1109, 696),
     '102': (1660, 1164),
     '102x152': (1660, 1164),
+    '103': (1822, 1200),
+    '104': (1822, 1200),
+    '103x164': (1822, 1200),
 }
 
 IMAGESIZE_600 = {
@@ -749,6 +785,7 @@ def render_label(
     save_png_prefix: Optional[str] = None,
     save_raster_prefix: Optional[str] = None,
     dpi_600: bool = False,
+    labelsize_override: Optional[str] = None,
 ) -> tuple[Optional[bytes], str, int]:
     fname = os.path.basename(raw_fname)
 
@@ -791,6 +828,10 @@ def render_label(
     except KeyError:
         usage('Cannot find one of hostname, port, model, labelsize: %s' % (printer))
 
+    if labelsize_override:
+        labelsize = labelsize_override
+        log(f'Label size overridden via CLI: {labelsize}')
+
     supports_600 = {'62', '62x100'}
     effective_dpi_600 = dpi_600 and labelsize in supports_600
     if dpi_600 and not effective_dpi_600:
@@ -800,7 +841,10 @@ def render_label(
     LABEL_DPI = 600 if effective_dpi_600 else 300
     imagesize_map = IMAGESIZE_600 if LABEL_DPI == 600 else IMAGESIZE_300
 
-    label_dimensions = imagesize_map[labelsize]
+    try:
+        label_dimensions = imagesize_map[labelsize]
+    except KeyError:
+        usage(f'Unknown label size {labelsize}')
     print('hostname: %s port: %s model: %s labelsize: %s label_dimensions: %s LABEL_DPI: %s' % (hostname, port, model, labelsize, label_dimensions, LABEL_DPI), file=sys.stderr)
 
     label_type = params.get('type')
@@ -815,7 +859,7 @@ def render_label(
             right_image = render_frame_label(fields, label_dimensions, vertical_side='right')
             images = [left_image, right_image]
             log(f"Rendered custom Frame label set for bib {fields.bib}")
-        elif label_type == 'Body' and labelsize in ('102', '102x152'):
+        elif label_type == 'Body' and labelsize in ('102', '102x152', '103', '104', '103x164'):
             body_image = render_body_label(fields, label_dimensions)
             images = [body_image]
             log(f"Rendered custom Body label for bib {fields.bib}")
@@ -871,10 +915,11 @@ def render_label(
 
 
 def main() -> None:
-    raw_fname, save_png_prefix, save_raster_prefix, dpi_600 = parse_cli_args(sys.argv[1:])
-    print('raw_fname: %s save_png_prefix: %s save_raster_prefix: %s dpi_600: %s' % (raw_fname, save_png_prefix, save_raster_prefix, dpi_600), file=sys.stderr)
+    raw_fname, save_png_prefix, save_raster_prefix, dpi_600, labelsize_override = parse_cli_args(sys.argv[1:])
+
+    print('raw_fname: %s save_png_prefix: %s save_raster_prefix: %s dpi_600: %s labelsize: %s' % (raw_fname, save_png_prefix, save_raster_prefix, dpi_600, labelsize_override), file=sys.stderr)
     payload = sys.stdin.buffer.read()
-    data, hostname, port = render_label(raw_fname, payload, save_png_prefix, save_raster_prefix, dpi_600)
+    data, hostname, port = render_label(raw_fname, payload, save_png_prefix, save_raster_prefix, dpi_600, labelsize_override)
     print('data: %s hostname: %s port: %s' % ('<omitted>' if data else None, hostname, port), file=sys.stderr)
     if data is None:
         return
