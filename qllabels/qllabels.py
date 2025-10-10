@@ -52,13 +52,14 @@ __version__ = "1.0.2"
 import sys
 import os
 import socket
-import subprocess
 import traceback
-import xml.etree.ElementTree as ET
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
+
+import xml.etree.ElementTree as ET
+import subprocess
 
 from pdf2image import convert_from_bytes
 
@@ -207,6 +208,12 @@ FONT_DIR = PROJECT_ROOT / 'fonts'
 DIN_ENG_FONT = FONT_DIR / 'TGL_0-1451Eng.ttf'
 
 try:
+    import fitz
+except ImportError:  # pragma: no cover - optional dependency
+    fitz = None  # type: ignore
+    print('Warning: PyMuPDF not installed, falling back to pdftotext for PDF text extraction', file=sys.stderr)
+
+try:
     RESAMPLING_LANCZOS = Image.Resampling.LANCZOS
 except AttributeError:  # Pillow < 9
     RESAMPLING_LANCZOS = Image.LANCZOS
@@ -343,6 +350,48 @@ def _fit_vertical_font(text: str, strip_width: int, max_vertical_extent: int, we
     return best_font or _load_font(max(1, high), weight)
 
 
+def _extract_pdf_words(pdf_bytes: bytes) -> List[Tuple[int, float, List[Word]]]:
+    if fitz is None:  # pragma: no cover - dependency check
+        return _extract_pdftotext_words(pdf_bytes)
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+    except Exception:
+        return _extract_pdftotext_words(pdf_bytes)
+
+    pages: List[Tuple[int, float, List[Word]]] = []
+    try:
+        for page_index in range(len(doc)):
+            page = doc[page_index]
+            width = float(page.rect.width)
+            words: List[Word] = []
+            for entry in page.get_text('words'):
+                if len(entry) < 5:
+                    continue
+                x_min, y_min, x_max, y_max, text = entry[:5]
+                text = (text or '').strip()
+                if not text:
+                    continue
+                words.append(
+                    Word(
+                        text=text,
+                        x_min=float(x_min),
+                        y_min=float(y_min),
+                        x_max=float(x_max),
+                        y_max=float(y_max),
+                        page=page_index,
+                        page_width=width,
+                    )
+                )
+            pages.append((page_index, width, words))
+    finally:
+        doc.close()
+
+    if any(words for _, _, words in pages):
+        return pages
+
+    return _extract_pdftotext_words(pdf_bytes)
+
+
 def _run_pdftotext_bbox(pdf_bytes: bytes) -> bytes:
     try:
         proc = subprocess.run(
@@ -366,22 +415,23 @@ def _strip_namespace(tag: str) -> str:
     return tag
 
 
-def _parse_lines(pdf_bytes: bytes) -> List[Line]:
+def _extract_pdftotext_words(pdf_bytes: bytes) -> List[Tuple[int, float, List[Word]]]:
     raw_xml = _run_pdftotext_bbox(pdf_bytes)
     try:
         root = ET.fromstring(raw_xml)
     except ET.ParseError as exc:
         raise LabelExtractionError('Unable to parse pdftotext output') from exc
-    doc = None
+
+    doc_elem = None
     for elem in root.iter():
         if _strip_namespace(elem.tag) == 'doc':
-            doc = elem
+            doc_elem = elem
             break
-    if doc is None:
+    if doc_elem is None:
         raise LabelExtractionError('No document data found in pdftotext output')
 
-    lines: List[Line] = []
-    for page_index, page_elem in enumerate(doc.iter()):
+    pages: List[Tuple[int, float, List[Word]]] = []
+    for page_index, page_elem in enumerate(doc_elem.iter()):
         if _strip_namespace(page_elem.tag) != 'page':
             continue
         width = float(page_elem.attrib.get('width', '0'))
@@ -399,7 +449,26 @@ def _parse_lines(pdf_bytes: bytes) -> List[Line]:
                 y_max = float(word_elem.attrib['yMax'])
             except KeyError as exc:
                 raise LabelExtractionError('Incomplete bounding box data') from exc
-            words.append(Word(text=text, x_min=x_min, y_min=y_min, x_max=x_max, y_max=y_max, page=page_index, page_width=width))
+            words.append(
+                Word(
+                    text=text,
+                    x_min=x_min,
+                    y_min=y_min,
+                    x_max=x_max,
+                    y_max=y_max,
+                    page=page_index,
+                    page_width=width,
+                )
+            )
+        pages.append((page_index, width, words))
+    return pages
+
+
+def _parse_lines(pdf_bytes: bytes) -> List[Line]:
+    pages = _extract_pdf_words(pdf_bytes)
+
+    lines: List[Line] = []
+    for page_index, width, words in pages:
         if not words:
             continue
         words.sort(key=lambda w: (w.y_min, w.x_min))
