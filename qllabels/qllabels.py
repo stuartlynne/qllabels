@@ -89,46 +89,22 @@ def log(s):
         print('%s %s' % (getTimeNow().strftime('%H:%M:%S'), s.rstrip()), file=sys.stderr)
 
 def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str], Optional[str], bool, Optional[str]]:
-    parser = argparse.ArgumentParser(
-        prog='QLLABELS.py',
-        description='Convert RaceDB label PDFs into Brother raster instructions.'
-    )
-    parser.add_argument(
-        '--save-png',
-        '--save_png',
-        dest='save_png_prefix',
-        help='prefix path for saving rendered PNG previews',
-    )
-    parser.add_argument(
-        '--save-raster',
-        '--save_raster',
-        dest='save_raster_prefix',
-        help='prefix path for saving raster preview output',
-    )
-    parser.add_argument(
-        '--dpi-600',
-        '--dpi_600',
-        dest='dpi_600',
-        action='store_true',
-        help='render at 600 dpi when the target label supports it',
-    )
-    parser.add_argument(
-        '--labelsize',
-        dest='labelsize',
-        help='override detected label size (e.g. 62x100, 102x152)',
-    )
-    parser.add_argument(
-        'pdf_path',
-        help='label PDF produced by RaceDB (e.g. *_type-Frame.pdf)'
-    )
+    parser = argparse.ArgumentParser( prog='QLLABELS.py', description='Convert RaceDB label PDFs into Brother raster instructions.')
+    parser.add_argument( '--save-png', '--save_png', action='store_true', help='saved rendered PNG',)
+    parser.add_argument( '--save-raster', '--save_raster', action='store_true', help='save Brother raster output',)
+    parser.add_argument( '--dpi-600', '--dpi_600', dest='dpi_600', action='store_true', 
+                        help='render at 600 dpi when the target label supports it',)
+    parser.add_argument( '--hostname', dest='hostname', help='override detected hostname',)
+    parser.add_argument( '--labelsize', dest='labelsize', help='override detected label size (e.g. 62x100, 102x152)',)
+    parser.add_argument( 'pdf_path', help='label PDF produced by RaceDB (e.g. *_type-Frame.pdf)')
 
     args = parser.parse_args(argv)
     print(
-        'save_png_prefix: %s save_raster_prefix: %s labelsize: %s'
-        % (args.save_png_prefix, args.save_raster_prefix, args.labelsize),
+        'save_png: %s save_raster: %s labelsize: %s'
+        % (args.save_png, args.save_raster, args.labelsize),
         file=sys.stderr,
     )
-    return args.pdf_path, args.save_png_prefix, args.save_raster_prefix, args.dpi_600, args.labelsize
+    return args.pdf_path, args.save_png, args.save_raster, args.dpi_600, args.labelsize, args.hostname
 
 
 Sizes = {
@@ -704,14 +680,15 @@ def render_frame_label(fields: LabelFields, target_size: tuple[int, int], vertic
     available_vertical = max(height - VERTICAL_TEXT_GAP_MULTIPLIER * margin_px, height // 2)
     per_text_vertical = max(1, available_vertical // 2)
 
-    event_font = _fit_vertical_font(fields.event, strip_width, per_text_vertical)
+    #event_font = _fit_vertical_font(fields.event, strip_width, per_text_vertical)
+    event_font = _fit_vertical_font(RESULTS_FOOTER_TEXT, strip_width, per_text_vertical)
     participant_font = _fit_vertical_font(fields.participant, strip_width, per_text_vertical)
 
     if vertical_side.lower() == 'right':
-        event_img = _binarize_text_image(_create_rotated_text_image_right(fields.event, event_font))
+        event_img = _binarize_text_image(_create_rotated_text_image_right(RESULTS_FOOTER_TEXT, event_font))
         participant_img = _binarize_text_image(_create_rotated_text_image_right(fields.participant, participant_font))
     else:
-        event_img = _binarize_text_image(_create_rotated_text_image(fields.event, event_font))
+        event_img = _binarize_text_image(_create_rotated_text_image(RESULTS_FOOTER_TEXT, event_font))
         participant_img = _binarize_text_image(_create_rotated_text_image(fields.participant, participant_font))
 
     combined_height = event_img.height + participant_img.height
@@ -851,8 +828,8 @@ def render_body_label(fields: LabelFields, target_size: tuple[int, int]) -> Imag
 def render_label(
     raw_fname: str,
     payload: bytes,
-    save_png_prefix: Optional[str] = None,
-    save_raster_prefix: Optional[str] = None,
+    save_png: Optional[str] = None,
+    save_raster: Optional[str] = None,
     dpi_600: bool = False,
     labelsize_override: Optional[str] = None,
 ) -> tuple[Optional[bytes], str, int]:
@@ -889,13 +866,12 @@ def render_label(
     except KeyError:
         usage('Cannot find printerName %s' % (printer_name))
 
-    hostname = '172.17.0.1' if is_docker() else '127.0.0.1'
     try:
         port = printer['port']
         model = printer['model']
         labelsize = printer['labelsize']
     except KeyError:
-        usage('Cannot find one of hostname, port, model, labelsize: %s' % (printer))
+        usage('Cannot find one of port, model, labelsize: %s' % (printer))
 
     if labelsize_override:
         labelsize = labelsize_override
@@ -914,7 +890,7 @@ def render_label(
         label_dimensions = imagesize_map[labelsize]
     except KeyError:
         usage(f'Unknown label size {labelsize}')
-    print('hostname: %s port: %s model: %s labelsize: %s label_dimensions: %s LABEL_DPI: %s' % (hostname, port, model, labelsize, label_dimensions, LABEL_DPI), file=sys.stderr)
+    print('port: %s model: %s labelsize: %s label_dimensions: %s LABEL_DPI: %s' % (port, model, labelsize, label_dimensions, LABEL_DPI), file=sys.stderr)
 
     label_type = params.get('type')
     try:
@@ -939,23 +915,20 @@ def render_label(
     if not images:
         usage('No images produced from input PDF')
 
-    if save_png_prefix:
-        directory = os.path.dirname(save_png_prefix)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
+    bib = params.get('bib', 'unknown')
+    if save_png:
         for index, image in enumerate(images, start=1):
-            png_path = f"{save_png_prefix}-{index}.png"
+            png_path = f"{label_type}-{bib}-{labelsize}-{index}.png"
             image.save(png_path)
             log(f'Saved preview image: {png_path}')
-        return None, hostname, port
 
-    print('brother_ql: hostname: %s port: %s model: %s labelsize: %s' % (hostname, port, model, labelsize), file=sys.stderr)
+    print('brother_ql: port: %s model: %s labelsize: %s' % (port, model, labelsize), file=sys.stderr)
     backend = 'network'
-    printer_identifier = f"tcp://{hostname}:{port}"
+    #printer_identifier = f"tcp://{hostname}:{port}"
     base_kwargs = {'rotate': '90', 'label': labelsize}
     if LABEL_DPI == 600:
         base_kwargs['dpi_600'] = True
-    print('brother_ql: backend: %s printer: %s model: %s kwargs: %s' % (backend, printer_identifier, model, base_kwargs), file=sys.stderr)
+    print('brother_ql: backend: %s model: %s kwargs: %s' % (backend, model, base_kwargs), file=sys.stderr)
 
     data = bytearray()
     databytes = 0
@@ -969,26 +942,31 @@ def render_label(
         databytes += len(instructions)
         data.extend(instructions)
 
-    if save_raster_prefix:
-        directory = os.path.dirname(save_raster_prefix)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        raster_path = f"{save_raster_prefix}.raster"
+    if save_raster:
+        raster_path = f"{label_type}-{bib}-{labelsize}.raster"
         with open(raster_path, 'wb') as f:
             f.write(data)
         log(f'Saved preview image: {raster_path}')
-        return None, hostname, port
 
     print('brother_ql total databytes: %s ' % (databytes), file=sys.stderr)
-    return bytes(data), hostname, port
+    return bytes(data), port
 
 
 def main() -> None:
-    raw_fname, save_png_prefix, save_raster_prefix, dpi_600, labelsize_override = parse_cli_args(sys.argv[1:])
+    raw_fname, save_png, save_raster, dpi_600, labelsize_override, hostname = parse_cli_args(sys.argv[1:])
 
-    print('raw_fname: %s save_png_prefix: %s save_raster_prefix: %s dpi_600: %s labelsize: %s' % (raw_fname, save_png_prefix, save_raster_prefix, dpi_600, labelsize_override), file=sys.stderr)
+    print('raw_fname: %s save_png: %s save_raster: %s dpi_600: %s labelsize: %s hostname: %s' % (
+        raw_fname, save_png, save_raster, dpi_600, labelsize_override, hostname), file=sys.stderr)
     payload = sys.stdin.buffer.read()
-    data, hostname, port = render_label(raw_fname, payload, save_png_prefix, save_raster_prefix, dpi_600, labelsize_override)
+
+    data, port = render_label(raw_fname, payload, save_png, save_raster, dpi_600, labelsize_override)
+
+    if hostname:
+        port = 9100
+    else:
+        hostname = '172.17.0.1' if is_docker() else '127.0.0.1'
+
+
     print('data: %s hostname: %s port: %s' % ('<omitted>' if data else None, hostname, port), file=sys.stderr)
     if data is None:
         return
