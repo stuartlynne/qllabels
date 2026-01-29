@@ -97,6 +97,7 @@ def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str], Optional[str], 
     parser.add_argument( '--hostname', dest='hostname', help='override detected hostname',)
     parser.add_argument( '--labelsize', dest='labelsize', help='override detected label size (e.g. 62x100, 102x152)',)
     parser.add_argument( 'pdf_path', help='label PDF produced by RaceDB (e.g. *_type-Frame.pdf)')
+    parser.add_argument( '--no-print', action='store_true', help='do not forward to host for printing',)
 
     args = parser.parse_args(argv)
     print(
@@ -104,7 +105,7 @@ def parse_cli_args(argv: List[str]) -> tuple[str, Optional[str], Optional[str], 
         % (args.save_png, args.save_raster, args.labelsize),
         file=sys.stderr,
     )
-    return args.pdf_path, args.save_png, args.save_raster, args.dpi_600, args.labelsize, args.hostname
+    return args.pdf_path, args.save_png, args.save_raster, args.dpi_600, args.labelsize, args.hostname, args.no_print
 
 
 Sizes = {
@@ -986,13 +987,17 @@ def render_label(
 
 
 def main() -> None:
-    raw_fname, save_png, save_raster, dpi_600, labelsize_override, hostname = parse_cli_args(sys.argv[1:])
+    raw_fname, save_png, save_raster, dpi_600, labelsize_override, hostname, no_print = parse_cli_args(sys.argv[1:])
 
     print('raw_fname: %s save_png: %s save_raster: %s dpi_600: %s labelsize: %s hostname: %s' % (
         raw_fname, save_png, save_raster, dpi_600, labelsize_override, hostname), file=sys.stderr)
     payload = sys.stdin.buffer.read()
 
     data, port = render_label(raw_fname, payload, save_png, save_raster, dpi_600, labelsize_override)
+
+    if no_print:
+        print('No print flag set; exiting without sending to printer', file=sys.stderr)
+        return
 
     if hostname:
         port = 9100

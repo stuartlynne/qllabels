@@ -14,7 +14,7 @@ all:
 both: frame1 body1
 
 frame1:
-	./qllabels/qllabels.py --save-png  --save-raster --label 62x100 \
+	./qllabels/qllabels.py --save-png  --save-raster --label 62x100 --no-print \
 		tests/frame1/030489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf \
 		< tests/frame1/030489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf 
 
@@ -24,10 +24,10 @@ frame1-62x100:
 		< tests/frame1/030489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf 
 
 body1:
-	./qllabels/qllabels.py --save-png  --save-raster --label 102x152  \
+	./qllabels/qllabels.py --save-png  --save-raster --label 102x152 --no-print  \
 		tests/body1/686bbb13344a437292f0ca4b24ae1962_bib-733_port-8000_antenna-0_type-Body.pdf \
 		< tests/body1/686bbb13344a437292f0ca4b24ae1962_bib-733_port-8000_antenna-0_type-Body.pdf 
-	./qllabels/qllabels.py --save-png  --save-raster --label 103x164  \
+	./qllabels/qllabels.py --save-png  --save-raster --label 103x164  --no-print \
 		tests/body1/686bbb13344a437292f0ca4b24ae1962_bib-733_port-8000_antenna-0_type-Body.pdf \
 		< tests/body1/686bbb13344a437292f0ca4b24ae1962_bib-733_port-8000_antenna-0_type-Body.pdf
 
