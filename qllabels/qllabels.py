@@ -200,19 +200,31 @@ except AttributeError:  # Pillow < 9
 FONT_PATHS = {
     'bib': (
         str(DIN_ENG_FONT),
+        str(FONT_DIR / 'RobotoCondensed-Bold.ttf'),
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
         '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+        '/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/ttf-freefont/FreeSansBold.ttf',
     ),
     'bold': (
+        str(FONT_DIR / 'RobotoCondensed-Bold.ttf'),
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
         '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+        '/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/ttf-freefont/FreeSansBold.ttf',
     ),
     'regular': (
+        str(FONT_DIR / 'RobotoCondensed-Regular.ttf'),
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
         '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+        '/usr/share/fonts/ttf-dejavu/DejaVuSans.ttf',
+        '/usr/share/fonts/TTF/DejaVuSans.ttf',
+        '/usr/share/fonts/ttf-freefont/FreeSans.ttf',
     ),
 }
 
