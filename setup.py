@@ -38,6 +38,8 @@ setup(
     long_description_content_type="text/markdown",
     author="stuartlynne",
     packages=find_packages(exclude=["tests", ".github"]),
+    include_package_data=True,
+    package_data={"qllabels": ["fonts/*.ttf"]},
     install_requires=read_requirements("requirements.txt"),
     entry_points={
         "console_scripts": [

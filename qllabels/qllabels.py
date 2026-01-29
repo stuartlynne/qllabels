@@ -183,8 +183,11 @@ RESULTS_FOOTER_TEXT = 'results.wimsey.co'
 VERTICAL_EVENT_SHIFT_MM = 0.0
 VERTICAL_PARTICIPANT_SHIFT_MM = 2.0
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FONT_DIR = PROJECT_ROOT / 'fonts'
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_ROOT.parent
+FONT_DIR = PACKAGE_ROOT / 'fonts'
+if not FONT_DIR.is_dir():
+    FONT_DIR = PROJECT_ROOT / 'fonts'
 DIN_ENG_FONT = FONT_DIR / 'TGL_0-1451Eng.ttf'
 
 try:
@@ -288,7 +291,7 @@ def _find_font_path(weight: str) -> Optional[str]:
 
 
 _FONT_CACHE = {}
-_FONT_DEBUGGED = set()
+_FONT_FALLBACK_LOGGED = set()
 _FONTCONFIG_CACHE = {}
 
 _FONTCONFIG_QUERIES = {
@@ -333,14 +336,24 @@ def _fontconfig_match(weight: str) -> Optional[str]:
     return None
 
 
+def _assert_container_fonts() -> None:
+    required = (
+        DIN_ENG_FONT,
+        FONT_DIR / 'RobotoCondensed-Bold.ttf',
+        FONT_DIR / 'RobotoCondensed-Regular.ttf',
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        log('Missing bundled fonts in container; ensure /qllabels/fonts is copied into the image.')
+        for path in missing:
+            log(f'Missing font file: {path}')
+        raise SystemExit(2)
+
+
 def _load_font(size: int, weight: str = 'regular') -> ImageFont.FreeTypeFont:
     cache_key = (weight, size)
     if cache_key in _FONT_CACHE:
         return _FONT_CACHE[cache_key]
-    if weight not in _FONT_DEBUGGED:
-        candidates = list(FONT_PATHS.get(weight, ()))
-        log(f'Font candidates for {weight}: {candidates}')
-        _FONT_DEBUGGED.add(weight)
     if weight == 'bib' and DIN_ENG_FONT.is_file():
         try:
             font = ImageFont.truetype(str(DIN_ENG_FONT), size=size)
@@ -360,7 +373,9 @@ def _load_font(size: int, weight: str = 'regular') -> ImageFont.FreeTypeFont:
             log(f'Warning: failed to load font at {path}')
             continue
     if font is None:
-        log(f'Warning: falling back to default PIL font for weight={weight}')
+        if weight not in _FONT_FALLBACK_LOGGED:
+            log(f'Warning: falling back to default PIL font for weight={weight}')
+            _FONT_FALLBACK_LOGGED.add(weight)
         font = ImageFont.load_default()
     _FONT_CACHE[cache_key] = font
     return font
@@ -1052,6 +1067,8 @@ def render_label(
 
 
 def main() -> None:
+    if is_docker():
+        _assert_container_fonts()
     raw_fname, save_png, save_raster, dpi_600, labelsize_override, hostname, no_print = parse_cli_args(sys.argv[1:])
 
     print('raw_fname: %s save_png: %s save_raster: %s dpi_600: %s labelsize: %s hostname: %s' % (
