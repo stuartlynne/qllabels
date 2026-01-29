@@ -284,12 +284,17 @@ def _find_font_path(weight: str) -> Optional[str]:
 
 
 _FONT_CACHE = {}
+_FONT_DEBUGGED = set()
 
 
 def _load_font(size: int, weight: str = 'regular') -> ImageFont.FreeTypeFont:
     cache_key = (weight, size)
     if cache_key in _FONT_CACHE:
         return _FONT_CACHE[cache_key]
+    if weight not in _FONT_DEBUGGED:
+        candidates = list(FONT_PATHS.get(weight, ()))
+        log(f'Font candidates for {weight}: {candidates}')
+        _FONT_DEBUGGED.add(weight)
     if weight == 'bib' and DIN_ENG_FONT.is_file():
         try:
             font = ImageFont.truetype(str(DIN_ENG_FONT), size=size)
@@ -306,8 +311,10 @@ def _load_font(size: int, weight: str = 'regular') -> ImageFont.FreeTypeFont:
             font = ImageFont.truetype(path, size=size)
             break
         except OSError:
+            log(f'Warning: failed to load font at {path}')
             continue
     if font is None:
+        log(f'Warning: falling back to default PIL font for weight={weight}')
         font = ImageFont.load_default()
     _FONT_CACHE[cache_key] = font
     return font
