@@ -51,6 +51,7 @@ __version__ = "1.0.3"
 
 import sys
 import os
+import shutil
 import socket
 import traceback
 
@@ -280,11 +281,56 @@ def _find_font_path(weight: str) -> Optional[str]:
     for candidate in FONT_PATHS.get(weight, ()):  # pragma: no branch - tiny loop
         if os.path.isfile(candidate):
             return candidate
+    fontconfig_path = _fontconfig_match(weight)
+    if fontconfig_path:
+        return fontconfig_path
     return None
 
 
 _FONT_CACHE = {}
 _FONT_DEBUGGED = set()
+_FONTCONFIG_CACHE = {}
+
+_FONTCONFIG_QUERIES = {
+    'bib': (
+        'DIN 1451 Engschrift:style=Regular',
+        'DejaVu Sans:style=Bold',
+        'Noto Sans:style=Bold',
+        'FreeSans:style=Bold',
+    ),
+    'bold': (
+        'DejaVu Sans:style=Bold',
+        'Noto Sans:style=Bold',
+        'FreeSans:style=Bold',
+    ),
+    'regular': (
+        'DejaVu Sans:style=Book',
+        'Noto Sans:style=Regular',
+        'FreeSans:style=Regular',
+    ),
+}
+
+
+def _fontconfig_match(weight: str) -> Optional[str]:
+    if weight in _FONTCONFIG_CACHE:
+        return _FONTCONFIG_CACHE[weight]
+    if shutil.which('fc-match') is None:
+        _FONTCONFIG_CACHE[weight] = None
+        return None
+    for query in _FONTCONFIG_QUERIES.get(weight, ()):
+        try:
+            out = subprocess.check_output(
+                ['fc-match', '-f', '%{file}\n', query],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            continue
+        if out and os.path.isfile(out):
+            _FONTCONFIG_CACHE[weight] = out
+            return out
+    _FONTCONFIG_CACHE[weight] = None
+    return None
 
 
 def _load_font(size: int, weight: str = 'regular') -> ImageFont.FreeTypeFont:
