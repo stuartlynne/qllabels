@@ -2,8 +2,8 @@
 # vim: noexpandtab tabstop=8 shiftwidth=8
 
 LARGE = "192.168.40.93"
-#SMALL = "192.168.40.42"
-SMALL = "192.168.40.93"
+SMALL = "192.168.40.42"
+#SMALL = "192.168.40.93"
 
 
 all:

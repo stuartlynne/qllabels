@@ -47,7 +47,7 @@
 # the TCP port that the server responds to, e.g. 8000 or 8001 etc.
 #
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import sys
 import os
@@ -178,6 +178,8 @@ BIB_HORIZONTAL_OFFSET_INCH = 0.125
 BODY_VERTICAL_STRIP_MULTIPLIER = 2.5
 BODY_VERTICAL_MARGIN_INCH = 0.02
 RESULTS_FOOTER_TEXT = 'results.wimsey.co'
+VERTICAL_EVENT_SHIFT_MM = 0.0
+VERTICAL_PARTICIPANT_SHIFT_MM = 2.0
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FONT_DIR = PROJECT_ROOT / 'fonts'
@@ -606,10 +608,32 @@ def _binarize_text_image(img: Image.Image, threshold: int = 200) -> Image.Image:
 def _paste_rotated_text(base: Image.Image, img: Image.Image, x_offset: int, y_offset: int) -> None:
     if img.width == 0 or img.height == 0:
         return
-    x_offset = max(0, min(x_offset, base.width - img.width))
-    y_offset = max(0, min(y_offset, base.height - img.height))
-    mask = ImageOps.invert(img)
-    base.paste(img, (x_offset, y_offset), mask)
+    paste_img = img
+    x_off = x_offset
+    y_off = y_offset
+
+    if x_off < 0:
+        crop_left = min(-x_off, paste_img.width)
+        paste_img = paste_img.crop((crop_left, 0, paste_img.width, paste_img.height))
+        x_off = 0
+    if y_off < 0:
+        crop_top = min(-y_off, paste_img.height)
+        paste_img = paste_img.crop((0, crop_top, paste_img.width, paste_img.height))
+        y_off = 0
+
+    if paste_img.width == 0 or paste_img.height == 0:
+        return
+
+    max_x = base.width - paste_img.width
+    max_y = base.height - paste_img.height
+    if max_x < 0 or max_y < 0:
+        return
+
+    x_off = min(x_off, max_x)
+    y_off = min(y_off, max_y)
+
+    mask = ImageOps.invert(paste_img)
+    base.paste(paste_img, (x_off, y_off), mask)
 
 
 def _scale_vertical_text(img: Image.Image, factor: float, max_width: int, max_height: int) -> Image.Image:
@@ -676,7 +700,10 @@ def render_frame_label(fields: LabelFields, target_size: tuple[int, int], vertic
     offset_px = max(0, int(round(LABEL_DPI * BIB_HORIZONTAL_OFFSET_INCH)))
     image = Image.new('L', (width, height), color=255)
 
-    strip_width = max(1, int(round(LABEL_DPI * VERTICAL_TEXT_STRIP_MAX_INCH)))
+    base_strip_width = max(1, int(round(LABEL_DPI * VERTICAL_TEXT_STRIP_MAX_INCH)))
+    strip_width = max(1, int(round(base_strip_width * 1.7)))
+    event_shift_px = int(round(LABEL_DPI * (VERTICAL_EVENT_SHIFT_MM / 25.4)))
+    participant_shift_px = int(round(LABEL_DPI * (VERTICAL_PARTICIPANT_SHIFT_MM / 25.4)))
     available_vertical = max(height - VERTICAL_TEXT_GAP_MULTIPLIER * margin_px, height // 2)
     per_text_vertical = max(1, available_vertical // 2)
 
@@ -734,17 +761,23 @@ def render_frame_label(fields: LabelFields, target_size: tuple[int, int], vertic
         event_x = margin_px
     else:
         event_x = max(margin_px, width - margin_px - event_img.width)
-    _paste_rotated_text(image, event_img, event_x, margin_px)
+    event_y = margin_px - event_shift_px
+    max_event_y = height - margin_px - event_img.height
+    if max_event_y < event_y:
+        event_y = max_event_y
+    _paste_rotated_text(image, event_img, event_x, event_y)
 
     participant_x = event_x if vertical_left else max(margin_px, width - margin_px - participant_img.width)
 
-    min_participant_y = margin_px + event_img.height + margin_px
-    max_participant_y = height - margin_px - participant_img.height
-    if max_participant_y >= min_participant_y:
-        participant_y = max_participant_y
-    else:
-        participant_y = min(height - participant_img.height, max(min_participant_y, margin_px))
+    min_participant_y = max(margin_px, event_y + event_img.height + margin_px)
+    max_participant_y = max(margin_px, height - margin_px - participant_img.height)
+    bottom_aligned = max_participant_y >= min_participant_y
+    participant_y = max_participant_y
+    participant_y -= participant_shift_px
     participant_y = max(margin_px, participant_y)
+    if bottom_aligned:
+        participant_y = max(min_participant_y, participant_y)
+    participant_y = min(participant_y, max_participant_y)
     _paste_rotated_text(image, participant_img, participant_x, participant_y)
 
     return image
