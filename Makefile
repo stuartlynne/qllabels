@@ -18,6 +18,11 @@ frame1:
 		tests/frame1/030489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf \
 		< tests/frame1/030489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf 
 
+qframe1:
+	qllabels --save-png  --save-raster --label 62x100 --no-print \
+		tests/frame1/030489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf \
+		< tests/frame1/030489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf 
+
 frame1-62x100:
 	./qllabels/qllabels.py --save-png  --save-raster --label 62x100 --hostname $(SMALL) \
 		tests/frame1/030489203498023809_bib-719_port-8000_antenna-0_type-Frame.pdf \
