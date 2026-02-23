@@ -144,8 +144,8 @@ Pools = {
     "8000-0": { "small": "small1", "large": "large1"},
     "8000-1": { "small": "small1", "large": "large1"},
     "8000-2": { "small": "small1", "large": "large1"},
-    "8000-3": { "small": "small2", "large": "large1"},
-    "8000-4": { "small": "small2", "large": "large1"},
+    "8000-3": { "small": "small2", "large": "large2"},
+    "8000-4": { "small": "small2", "large": "large2"},
 }
 Printers = {
     "small1" : { "port":9101, "model":"QL-710W",  "labelsize": "62x100"},
@@ -957,7 +957,7 @@ def render_label(
             if '-' in part
         )
     }
-    print('params: %s' % (params))
+    print('params: %s' % (params), file=sys.stderr)
 
     try:
         size = Sizes[params['type']]
@@ -965,6 +965,7 @@ def render_label(
         usage('Do not understand type-%s' % (params.get('type')))
 
     pool_key = f"{params['port']}-{params['antenna']}"
+    print('pool_key: %s size: %s' % (pool_key, size), file=sys.stderr)
     try:
         pool = Pools[pool_key]
     except KeyError:
@@ -974,6 +975,7 @@ def render_label(
         printer_name = pool[size]
     except KeyError:
         usage('Do not understand printerName %s' % (size))
+    print('printer_name: %s' % (printer_name), file=sys.stderr)
 
     try:
         printer = Printers[printer_name]
@@ -1077,9 +1079,6 @@ def main() -> None:
 
     data, port = render_label(raw_fname, payload, save_png, save_raster, dpi_600, labelsize_override)
 
-    if no_print:
-        print('No print flag set; exiting without sending to printer', file=sys.stderr)
-        return
 
     if hostname:
         port = 9100
@@ -1089,6 +1088,10 @@ def main() -> None:
 
     print('data: %s hostname: %s port: %s' % ('<omitted>' if data else None, hostname, port), file=sys.stderr)
     if data is None:
+        return
+
+    if no_print:
+        print('No print flag set; exiting without sending to printer', file=sys.stderr)
         return
 
     s = socket.socket()
